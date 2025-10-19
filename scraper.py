@@ -11,9 +11,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import logging
+import os
 import re
 import time
 from collections import deque
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -283,8 +285,6 @@ class ContactScraper:
         return links
 
 def export_contacts_to_excel(contacts: Iterable[Contact], filename: str) -> str:
-    from pathlib import Path
-
     try:
         from openpyxl import Workbook
     except ImportError as exc:  # pragma: no cover - depende del entorno
@@ -293,7 +293,17 @@ def export_contacts_to_excel(contacts: Iterable[Contact], filename: str) -> str:
             "Instala las dependencias con `pip install -r requirements.txt`."
         ) from exc
 
-    output_path = Path(filename).resolve()
+    base_dir_env = os.getenv("EXPORT_DIR")
+    if base_dir_env:
+        base_dir = Path(base_dir_env)
+    elif os.getenv("VERCEL"):
+        base_dir = Path("/tmp")
+    else:
+        base_dir = Path("exports")
+
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = (base_dir / filename).resolve()
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Contactos"

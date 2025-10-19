@@ -12,8 +12,9 @@ from ai_client import RetryableError, respond
 
 logger = logging.getLogger(__name__)
 
-MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_ENRICH_MAX_TOKENS", "2400"))
-TOKENS_PER_CONTACT = int(os.getenv("OPENAI_ENRICH_TOKENS_PER_CONTACT", "140"))
+MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_ENRICH_MAX_TOKENS", "0"))
+TOKENS_PER_CONTACT = int(os.getenv("OPENAI_ENRICH_TOKENS_PER_CONTACT", "0"))
+MAX_CONTACTS_PER_REQUEST = int(os.getenv("OPENAI_ENRICH_MAX_CONTACTS", "0"))
 
 
 def enrich_contacts(
@@ -33,56 +34,65 @@ def enrich_contacts(
         return [dict(contact) for contact in contacts_list], [note]
 
     notes: List[str] = []
-    try:
-        chunk_results, metadata = _query_contacts_with_retry(contacts_list)
-    except Exception as exc:  # pragma: no cover - depende de servicio externo
-        logger.exception(
-            "Fallo al enriquecer contactos con IA: %s. Se usará la información original.",
-            exc,
-        )
-        notes.append(
-            "No fue posible enriquecer los contactos con OpenAI. "
-            "Se muestran los datos originales."
-        )
-        return [dict(contact) for contact in contacts_list], notes
-
-    usage = metadata.get("usage") if isinstance(metadata, dict) else None
-    if isinstance(usage, dict):
-        logger.debug(
-            "OpenAI tokens usados: input=%s output=%s total=%s",
-            usage.get("input_tokens"),
-            usage.get("output_tokens"),
-            usage.get("total_tokens"),
-        )
-
     enriched: List[Dict[str, str]] = []
     invalid_count = 0
     flagged_count = 0
+    aggregated_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    for contact, extra in zip(contacts_list, chunk_results):
-        enriched_contact = dict(contact)
-        valido = bool(extra.get("valido"))
-        enriched_contact["validado"] = valido
-        if not valido:
-            invalid_count += 1
+    step = len(contacts_list) if MAX_CONTACTS_PER_REQUEST <= 0 else max(1, MAX_CONTACTS_PER_REQUEST)
 
-        descripcion_enriquecida = (extra.get("descripcion") or "").strip()
-        if descripcion_enriquecida:
-            enriched_contact["descripcion_enriquecida"] = descripcion_enriquecida
+    for start in range(0, len(contacts_list), step):
+        chunk = contacts_list[start : start + step]
+        try:
+            chunk_results, metadata = _query_contacts_with_retry(chunk)
+        except Exception as exc:  # pragma: no cover - depende de servicio externo
+            logger.exception(
+                "Fallo al enriquecer contactos con IA: %s. Se usarán los datos originales para este bloque.",
+                exc,
+            )
+            notes.append(
+                "La IA no pudo validar algunos contactos; se mantienen los datos detectados."
+            )
+            enriched.extend(dict(contact) for contact in chunk)
+            continue
 
-        motivo = (extra.get("motivo") or "").strip()
-        if motivo:
-            flags = set(_as_iterable(enriched_contact.get("flags")))
-            flags.add(motivo)
-            enriched_contact["flags"] = sorted(flags)
-            flagged_count += 1
+        usage = metadata.get("usage") if isinstance(metadata, dict) else None
+        if isinstance(usage, dict):
+            for key in aggregated_usage:
+                aggregated_usage[key] += usage.get(key, 0)
 
-        enriched.append(enriched_contact)
+        for contact, extra in zip(chunk, chunk_results):
+            enriched_contact = dict(contact)
+            valido = bool(extra.get("valido"))
+            enriched_contact["validado"] = valido
+            if not valido:
+                invalid_count += 1
+
+            descripcion_enriquecida = (extra.get("descripcion") or "").strip()
+            if descripcion_enriquecida:
+                enriched_contact["descripcion_enriquecida"] = descripcion_enriquecida
+
+            motivo = (extra.get("motivo") or "").strip()
+            if motivo:
+                flags = set(_as_iterable(enriched_contact.get("flags")))
+                flags.add(motivo)
+                enriched_contact["flags"] = sorted(flags)
+                flagged_count += 1
+
+            enriched.append(enriched_contact)
 
     if invalid_count:
         notes.append(f"{invalid_count} contacto(s) fueron marcados como no válidos por la IA.")
     if flagged_count and flagged_count != invalid_count:
         notes.append(f"{flagged_count} contacto(s) recibieron observaciones adicionales.")
+
+    if any(aggregated_usage.values()):
+        logger.debug(
+            "OpenAI tokens usados (total): input=%s output=%s total=%s",
+            aggregated_usage["input_tokens"],
+            aggregated_usage["output_tokens"],
+            aggregated_usage["total_tokens"],
+        )
 
     return enriched, notes
 
@@ -103,7 +113,7 @@ def sort_contacts(contacts: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
 def _query_contacts_with_retry(
     chunk: Sequence[Dict[str, str]]
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
-    """Solicita enriquecimiento IA con un prompt primario y uno estricto si es necesario."""
+    """Solicita enriquecimiento IA en una sola llamada; si falla, divide la lista."""
 
     if not chunk:
         return [], {}
@@ -115,17 +125,20 @@ def _query_contacts_with_retry(
     last_exc: Exception | None = None
     metadata: Dict[str, object] = {}
 
-    estimated_tokens = min(
-        MAX_OUTPUT_TOKENS,
-        max(400, 200 + len(chunk) * TOKENS_PER_CONTACT),
-    )
+    if MAX_OUTPUT_TOKENS > 0:
+        estimated_tokens = min(
+            MAX_OUTPUT_TOKENS,
+            max(400, 200 + len(chunk) * TOKENS_PER_CONTACT),
+        )
+    else:
+        estimated_tokens = 0
 
     for idx, prompt in enumerate(prompts):
         try:
             content, metadata = respond(
                 prompt,
-                max_tokens=estimated_tokens,
-                json_mode=True,
+                max_tokens=estimated_tokens or None,
+                json_mode=False,
             )
             chunk_results = _parse_contacts_response(content, expected=len(chunk))
             return chunk_results, metadata
@@ -139,6 +152,31 @@ def _query_contacts_with_retry(
             last_exc = exc
             logger.exception("Fallo al enriquecer contactos con IA: %s", exc)
             break
+
+    if last_exc and len(chunk) > 1:
+        logger.info(
+            "Dividiendo lote de %d contactos para reintentar debido a: %s",
+            len(chunk),
+            last_exc,
+        )
+        mid = len(chunk) // 2
+        left, right = chunk[:mid], chunk[mid:]
+        left_results, left_meta = _query_contacts_with_retry(left)
+        right_results, right_meta = _query_contacts_with_retry(right)
+        # combinar metadatos de uso si existen
+        usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        for meta in (left_meta, right_meta):
+            if isinstance(meta, dict):
+                usage_meta = meta.get("usage")
+                if isinstance(usage_meta, dict):
+                    for key in usage_totals:
+                        usage_totals[key] += usage_meta.get(key, 0)
+        combined_meta: Dict[str, object] = (
+            {"usage": usage_totals}
+            if any(usage_totals.values())
+            else {}
+        )
+        return left_results + right_results, combined_meta
 
     raise last_exc or RuntimeError("No se logró obtener un JSON válido de la IA.")
 
@@ -157,13 +195,11 @@ def _build_prompt(contacts: Sequence[Dict[str, str]], *, strict: bool) -> str:
         )
 
     instrucciones = [
-        "Evalúa cada contacto y responde únicamente con JSON válido. "
-        "Estructura exacta: {\"contacts\":[{\"indice\":num,\"valido\":bool,"
+        "Devuelve JSON válido con formato {\"contacts\":[{\"indice\":num,\"valido\":bool,"
         "\"descripcion\":str,\"motivo\":str}]}. "
-        "No presentes razonamientos, explicaciones ni cadenas de pensamiento. "
-        "La descripción debe ser corta (≤40 caracteres) y profesional. "
-        "Si el dato es inválido, deja descripcion vacía y explica la razón en 'motivo'. "
-        "Si es válido pero detectas advertencias, colócalas en 'motivo'."
+        "Sin texto adicional ni comentarios. "
+        "Descripción máx 30 caracteres. Sin razonamientos. "
+        "Si no hay motivo, usa cadena vacía."
     ]
 
     if strict:

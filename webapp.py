@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -27,8 +28,18 @@ from enrichment import enrich_contacts, sort_contacts
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("webapp")
 
-EXPORT_DIR = Path("exports")
-EXPORT_DIR.mkdir(exist_ok=True)
+_export_dir_env = os.getenv("EXPORT_DIR")
+if _export_dir_env:
+    EXPORT_DIR = Path(_export_dir_env)
+elif os.getenv("VERCEL"):
+    EXPORT_DIR = Path("/tmp")
+else:
+    EXPORT_DIR = Path("exports")
+
+try:
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as exc:  # pragma: no cover - entorno sin permisos
+    logging.getLogger("webapp").warning("No se pudo crear el directorio de exportación: %s", exc)
 
 
 @dataclass
@@ -292,8 +303,8 @@ def run_scraper_job(job_id: str, urls: List[str], base_settings: CrawlSettings) 
                     "Ocurrió un error inesperado durante el enriquecimiento IA. "
                     "Se muestran los datos originales."
                 )
-            export_name = EXPORT_DIR / f"contactos_{job_id}.xlsx"
-            file_path = export_contacts_to_excel(contacts_list, export_name)
+            export_filename = f"contactos_{job_id}.xlsx"
+            file_path = export_contacts_to_excel(contacts_list, export_filename)
 
         update_job(
             job_id,

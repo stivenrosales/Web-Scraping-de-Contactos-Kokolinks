@@ -53,17 +53,20 @@ def _retry(fn: Callable[[], T], *, attempts: int = 3, backoff: float = 0.8) -> T
 def respond(
     prompt: str,
     *,
-    max_tokens: int = 900,
+    max_tokens: int | None = None,
     json_mode: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Envía un prompt y devuelve el texto plano junto con metadatos."""
 
     def call() -> Tuple[str, Dict[str, Any]]:
-        response = client.responses.create(
-            model=MODEL,
-            input=prompt,
-            max_output_tokens=max_tokens,
-        )
+        kwargs: Dict[str, Any] = {
+            "model": MODEL,
+            "input": prompt,
+        }
+        if max_tokens:
+            kwargs["max_output_tokens"] = max_tokens
+
+        response = client.responses.create(**kwargs)
         try:
             dumped = response.model_dump()
         except AttributeError:  # pragma: no cover - versiones antiguas
@@ -78,6 +81,9 @@ def respond(
                     logger.warning(
                         "Subrespuesta incompleta detectada: status=%s item=%s", status, item
                     )
+                    incomplete_text = item.get("content") if isinstance(item, dict) else None
+                    if incomplete_text:
+                        logger.warning("Contenido parcial recibido: %s", incomplete_text)
                     continue
                 contents = item.get("content") if isinstance(item, dict) else None
                 if not isinstance(contents, list):
@@ -133,6 +139,27 @@ def respond(
         if not combined:
             fallback = getattr(response, "output_text", "") or ""
             combined = fallback.strip()
+        if not combined and isinstance(dumped, dict):
+            text_conf = dumped.get("text")
+            if isinstance(text_conf, dict):
+                conf_val = text_conf.get("value") or text_conf.get("text")
+                if isinstance(conf_val, str):
+                    combined = conf_val.strip()
+        if not combined and isinstance(dumped, dict):
+            messages = dumped.get("output")
+            if isinstance(messages, list):
+                for item in messages:
+                    if isinstance(item, dict):
+                        for content in item.get("content") or []:
+                            if isinstance(content, dict):
+                                text_val = content.get("text")
+                                if isinstance(text_val, str) and text_val.strip():
+                                    combined = text_val.strip()
+                                    break
+                        if combined:
+                            break
+
+        logger.debug("OpenAI texto combinado final: %r", combined)
 
         metadata: Dict[str, Any] = {
             "status": dumped.get("status") if isinstance(dumped, dict) else None,
@@ -149,9 +176,23 @@ def respond(
             reason = incomplete.get("reason")
 
         if status and status != "completed":
-            raise RetryableError(f"Respuesta incompleta (status={status})")
+            logger.warning(
+                "Respuesta marcada como '%s'. Contenido combinado: %r", status, combined[:400]
+            )
+            if not combined:
+                raise RetryableError(f"Respuesta incompleta (status={status})")
+            if not combined.strip().endswith("}"):
+                raise RetryableError(f"Respuesta incompleta (status={status})")
         if reason:
-            raise RetryableError(f"Respuesta incompleta (motivo={reason})")
+            logger.warning(
+                "OpenAI reporta motivo de incompletitud '%s'. Contenido combinado: %r",
+                reason,
+                combined[:400],
+            )
+            if not combined:
+                raise RetryableError(f"Respuesta incompleta (motivo={reason})")
+            if not combined.strip().endswith("}"):
+                raise RetryableError(f"Respuesta incompleta (motivo={reason})")
         if not combined:
             raise RetryableError("Respuesta vacía de OpenAI")
 
