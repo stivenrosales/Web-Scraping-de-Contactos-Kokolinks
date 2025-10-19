@@ -195,11 +195,13 @@ def _build_prompt(contacts: Sequence[Dict[str, str]], *, strict: bool) -> str:
         )
 
     instrucciones = [
-        "Devuelve JSON válido con formato {\"contacts\":[{\"indice\":num,\"valido\":bool,"
-        "\"descripcion\":str,\"motivo\":str}]}. "
-        "Sin texto adicional ni comentarios. "
-        "Descripción máx 30 caracteres. Sin razonamientos. "
-        "Si no hay motivo, usa cadena vacía."
+        "Devuelve solo JSON válido con formato {\"contacts\":[{\"indice\":num,\"valido\":bool,"
+        "\"descripcion\":str,\"motivo\":str}]}. ",
+        "No añadas texto extra ni bloques ```.",
+        "descripcion debe ser un título breve (≤25 caracteres) que indique el rol del contacto.",
+        "descripcion no puede repetir el dato literal (correo/teléfono). Usa frases como 'Email prensa', 'Teléfono soporte', 'Email redacción'.",
+        "Si no es posible inferir el rol, usa 'Contacto general'.",
+        "motivo debe quedar en blanco cuando el dato sea válido; si no lo es, explica en ≤40 caracteres por qué."
     ]
 
     if strict:
