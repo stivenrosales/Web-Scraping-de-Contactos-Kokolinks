@@ -1,6 +1,6 @@
-beautifulsoup4
-requests
-openpyxl
+openai>=1.51.0
 flask
-openai
+requests
+beautifulsoup4
 pandas
+openpyxl

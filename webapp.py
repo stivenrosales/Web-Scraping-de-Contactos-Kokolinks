@@ -286,25 +286,12 @@ def run_scraper_job(job_id: str, urls: List[str], base_settings: CrawlSettings) 
             try:
                 contacts_list, enrichment_notes = enrich_contacts(contacts_list)
                 contacts_list = sort_contacts(contacts_list)
-            except RuntimeError as exc:
-                logger.exception("Error al enriquecer contactos con IA: %s", exc)
-                update_job(
-                    job_id,
-                    status="ERROR",
-                    error_message=str(exc),
-                    progress=1.0,
-                    current_step=total_steps,
-                    visited_pages=total_visited,
-                    explored_links=total_links,
-                    contacts=[],
-                    errors=aggregated_errors,
-                    completed_at=time.time(),
-                    finished=True,
-                    label="Error durante el enriquecimiento IA",
-                    site_results=site_results,
-                    notices=[],
+            except Exception as exc:  # pragma: no cover - seguridad adicional
+                logger.exception("Error inesperado al enriquecer contactos: %s", exc)
+                enrichment_notes.append(
+                    "Ocurrió un error inesperado durante el enriquecimiento IA. "
+                    "Se muestran los datos originales."
                 )
-                return
             export_name = EXPORT_DIR / f"contactos_{job_id}.xlsx"
             file_path = export_contacts_to_excel(contacts_list, export_name)
 

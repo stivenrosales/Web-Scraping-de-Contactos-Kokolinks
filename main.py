@@ -44,9 +44,10 @@ def main() -> None:
 
     try:
         enriched_contacts, notes = enrich_contacts(result.contacts)
-    except RuntimeError as exc:
-        print(f"Error durante el enriquecimiento IA: {exc}")
-        return
+    except Exception as exc:  # pragma: no cover - salvaguarda CLI
+        print(f"Error inesperado durante el enriquecimiento IA: {exc}")
+        enriched_contacts = list(result.contacts)
+        notes = ["No fue posible enriquecer los contactos con OpenAI."]
 
     enriched_contacts = sort_contacts(enriched_contacts)
     if notes:

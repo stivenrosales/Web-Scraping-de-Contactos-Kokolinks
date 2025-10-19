@@ -35,16 +35,15 @@ python webapp.py
 
 ### Validación con IA
 
-El sistema valida y describe cada contacto usando OpenAI. Debes definir la variable de entorno `OPENAI_API_KEY` antes de ejecutar el CLI o la aplicación web. También puedes ajustar modelo y temperatura:
+El sistema valida y describe cada contacto usando OpenAI (por defecto GPT-5 mini mediante la Responses API). Antes de ejecutar el CLI o la aplicación web debes definir `OPENAI_API_KEY`. Opcionalmente puedes indicar otro modelo con `OPENAI_MODEL`:
 
 ```bash
 export OPENAI_API_KEY="tu_token"
 # Opcional:
-export OPENAI_MODEL="gpt-4o-mini"
-export OPENAI_TEMPERATURE="0.2"
+export OPENAI_MODEL="gpt-5-mini"
 ```
 
-⚠️ Mantén tus credenciales fuera del repositorio (usa variables de entorno o un archivo `.env` que no subas al control de versiones). Si la clave no está configurada, el proceso se detendrá marcando un error.
+⚠️ Mantén tus credenciales fuera del repositorio (usa variables de entorno o un archivo `.env` que no subas al control de versiones). Si la clave no está configurada, el sistema omitirá el enriquecimiento automático y avisará en la interfaz.
 
 ### Personalización rápida
 
