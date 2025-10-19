@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Extractor de Contactos Web</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background: radial-gradient(circle at top, #f0f4ff, #f8f9fa 55%);
+      min-height: 100vh;
+    }
+    .card {
+      border-radius: 1rem;
+    }
+    .progress {
+      background-color: #e9ecef;
+    }
+    .progress-bar {
+      font-weight: 600;
+    }
+    .contact-url {
+      max-width: 22rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      display: inline-block;
+      vertical-align: bottom;
+    }
+  </style>
+</head>
+<body>
+  <div class="container py-5">
+    <div class="row justify-content-center">
+      <div class="col-lg-10 col-xl-8">
+        <h1 class="fw-bold text-center mb-4">Extractor de Contactos Web</h1>
+        <p class="text-center text-muted mb-5">
+          Ingresa la URL inicial y deja que el asistente explore el sitio para localizar correos y números de teléfono,
+          incluso en subpáginas. Al finalizar podrás descargar los resultados en Excel.
+        </p>
+
+        <div id="alert-container"></div>
+
+        <form id="scrape-form" class="card shadow-sm border-0 mb-4">
+          <div class="card-body p-4">
+            <div class="mb-3">
+              <label for="urls-input" class="form-label">URLs de los sitios web</label>
+              <textarea id="urls-input" class="form-control" name="urls" rows="4"
+                        placeholder="https://ejemplo.com&#10;https://otro-ejemplo.com" required></textarea>
+              <div class="form-text">
+                Puedes pegar varias direcciones (separadas por salto de línea, coma o punto y coma). Cada sitio se analizará con la misma configuración e incluirá subpáginas internas.
+              </div>
+            </div>
+            <div class="d-flex align-items-center justify-content-between">
+              <button type="submit" class="btn btn-primary btn-lg" id="submit-button">
+                Iniciar análisis
+              </button>
+              <div class="text-muted small" id="job-id-label"></div>
+            </div>
+          </div>
+        </form>
+
+        <div id="status-card" class="card shadow-sm border-0 d-none">
+          <div class="card-body p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h2 class="h5 mb-0">Seguimiento</h2>
+              <span id="status-badge" class="badge bg-secondary">Pendiente</span>
+            </div>
+
+            <div class="progress mb-3" style="height: 1.75rem;">
+              <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                   role="progressbar" style="width: 0%;">0%</div>
+            </div>
+
+            <p class="text-muted mb-2" id="progress-label"></p>
+            <p class="text-muted mb-3" id="visit-summary" hidden></p>
+            <p class="text-muted mb-3" id="current-url-label" hidden></p>
+
+            <ul id="status-errors" class="text-danger small mb-2"></ul>
+            <ul id="status-notes" class="text-warning small mb-3"></ul>
+
+            <div id="result-message" class="alert d-none" role="alert"></div>
+
+            <div id="results-section" class="d-none">
+              <div class="mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <h3 class="h6 mb-0">Resumen por sitio</h3>
+                  <span class="badge bg-secondary-subtle text-secondary" id="sites-count">0</span>
+                </div>
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle">
+                    <thead class="table-light">
+                      <tr>
+                        <th scope="col">Sitio</th>
+                        <th scope="col" class="text-center">Estado</th>
+                        <th scope="col" class="text-center">Contactos</th>
+                      </tr>
+                    </thead>
+                    <tbody id="sites-body"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="d-flex justify-content-between align-items-center mb-3" id="contacts-header">
+                <h3 class="h6 mb-0">Contactos encontrados</h3>
+                <span class="badge bg-primary-subtle text-primary" id="contacts-count">0</span>
+              </div>
+
+              <div id="contacts-table" class="table-responsive">
+                <table class="table table-hover align-middle">
+                  <thead class="table-light">
+                    <tr>
+                      <th scope="col">Sitio</th>
+                      <th scope="col">Tipo</th>
+                      <th scope="col">Descripción original</th>
+                      <th scope="col">Descripción IA</th>
+                      <th scope="col">Dato</th>
+                      <th scope="col">Página</th>
+                      <th scope="col" class="text-center">Validado</th>
+                    </tr>
+                  </thead>
+                  <tbody id="contacts-body"></tbody>
+                </table>
+              </div>
+
+              <div class="d-flex justify-content-end mt-3">
+                <a class="btn btn-success d-none" id="download-link" href="#" download>
+                  Descargar Excel
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('scrape-form');
+    const urlsInput = document.getElementById('urls-input');
+    const submitButton = document.getElementById('submit-button');
+    const statusCard = document.getElementById('status-card');
+    const statusBadge = document.getElementById('status-badge');
+    const progressBar = document.getElementById('progress-bar');
+    const progressLabel = document.getElementById('progress-label');
+    const visitSummary = document.getElementById('visit-summary');
+    const currentUrlLabel = document.getElementById('current-url-label');
+    const statusErrors = document.getElementById('status-errors');
+    const statusNotes = document.getElementById('status-notes');
+    const resultMessage = document.getElementById('result-message');
+    const resultsSection = document.getElementById('results-section');
+    const contactsBody = document.getElementById('contacts-body');
+    const contactsCount = document.getElementById('contacts-count');
+    const contactsHeader = document.getElementById('contacts-header');
+    const downloadLink = document.getElementById('download-link');
+    const jobIdLabel = document.getElementById('job-id-label');
+    const alertContainer = document.getElementById('alert-container');
+    const contactsTable = document.getElementById('contacts-table');
+    const sitesBody = document.getElementById('sites-body');
+    const sitesCount = document.getElementById('sites-count');
+
+    const statusLabels = {
+      PENDING: 'Pendiente',
+      RUNNING: 'Analizando',
+      OK: 'Completado',
+      NO_ENCONTRADO: 'Sin datos',
+      RESTRINGIDO: 'Restringido',
+      ERROR: 'Error'
+    };
+
+    const statusStyles = {
+      PENDING: 'bg-secondary',
+      RUNNING: 'bg-info text-dark',
+      OK: 'bg-success',
+      NO_ENCONTRADO: 'bg-warning text-dark',
+      RESTRINGIDO: 'bg-warning text-dark',
+      ERROR: 'bg-danger'
+    };
+
+    let pollingId = null;
+    let activeJobId = null;
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const rawUrls = urlsInput.value.trim();
+      if (!rawUrls) {
+        showAlert('Debes ingresar al menos una URL válida.', 'danger');
+        return;
+      }
+
+      disableForm(true);
+      resetStatusCard();
+
+      try {
+        const response = await fetch('/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls: rawUrls })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'No se pudo iniciar el análisis.');
+        }
+        activeJobId = payload.job_id;
+        jobIdLabel.textContent = `ID: ${activeJobId}`;
+        statusCard.classList.remove('d-none');
+        startPolling();
+      } catch (error) {
+        showAlert(error.message, 'danger');
+        disableForm(false);
+      }
+    });
+
+    function startPolling() {
+      if (pollingId) {
+        clearInterval(pollingId);
+      }
+      pollingId = setInterval(fetchStatus, 900);
+      fetchStatus();
+    }
+
+    async function fetchStatus() {
+      if (!activeJobId) {
+        return;
+      }
+      try {
+        const response = await fetch(`/status/${activeJobId}`);
+        if (!response.ok) {
+          throw new Error('No fue posible consultar el estado del análisis.');
+        }
+        const data = await response.json();
+        updateUI(data);
+        if (data.finished) {
+          clearInterval(pollingId);
+          disableForm(false);
+        }
+      } catch (error) {
+        clearInterval(pollingId);
+        showAlert(error.message, 'danger');
+        disableForm(false);
+      }
+    }
+
+    function updateUI(data) {
+      const statusText = statusLabels[data.status] || data.status;
+      const badgeClasses = statusStyles[data.status] || 'bg-secondary';
+      statusBadge.className = `badge ${badgeClasses}`;
+      statusBadge.textContent = statusText;
+
+      const percent = Math.min(100, Math.max(0, data.progress_percent));
+      progressBar.style.width = `${percent}%`;
+      progressBar.textContent = `${percent}%`;
+      progressLabel.textContent = data.label || '';
+
+      if (data.current_url) {
+        const totalUrls = data.total_urls || 0;
+        currentUrlLabel.hidden = false;
+        currentUrlLabel.textContent = `Analizando: ${data.current_url} (${data.current_url_index}/${totalUrls})`;
+      } else {
+        currentUrlLabel.hidden = true;
+        currentUrlLabel.textContent = '';
+      }
+
+      if (data.status === 'RUNNING') {
+        progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
+      } else {
+        progressBar.classList.remove('progress-bar-animated');
+      }
+
+      visitSummary.hidden = !data.visited_pages;
+      if (data.visited_pages) {
+        const links = data.explored_links || 0;
+        visitSummary.textContent = `Páginas visitadas: ${data.visited_pages} · Enlaces evaluados: ${links}`;
+      }
+
+      renderErrors(data.errors || [], data.error_message);
+      renderNotices(data.notices || []);
+
+      if (data.finished) {
+        handleFinalState(data);
+      }
+    }
+
+    function handleFinalState(data) {
+      progressBar.classList.remove('progress-bar-striped', 'progress-bar-animated');
+      let message = '';
+      let variant = 'secondary';
+
+      renderSiteResults(data.site_results || []);
+      resultsSection.classList.remove('d-none');
+
+      if (data.status === 'OK') {
+        message = `Se encontraron ${data.contacts_count} contactos.`;
+        variant = 'success';
+      } else if (data.status === 'NO_ENCONTRADO') {
+        message = 'No se localizaron datos de contacto en el sitio.';
+        variant = 'warning';
+      } else if (data.status === 'RESTRINGIDO') {
+        message = 'El sitio parece restringir el acceso automatizado.';
+        variant = 'warning';
+      } else if (data.status === 'ERROR') {
+        message = 'Ocurrió un error durante el rastreo.';
+        variant = 'danger';
+      }
+
+      if (message) {
+        resultMessage.textContent = message;
+        resultMessage.className = `alert alert-${variant}`;
+        resultMessage.classList.remove('d-none');
+      }
+
+      if (data.contacts_count && (data.contacts || []).length) {
+        renderContacts(data.contacts || []);
+        contactsTable.classList.remove('d-none');
+        contactsHeader.classList.remove('d-none');
+        if (data.download_url) {
+          downloadLink.classList.remove('d-none');
+          downloadLink.href = data.download_url;
+        } else {
+          downloadLink.classList.add('d-none');
+        }
+      } else {
+        contactsBody.innerHTML = '';
+        contactsCount.textContent = '0';
+        contactsTable.classList.add('d-none');
+        contactsHeader.classList.add('d-none');
+        downloadLink.classList.add('d-none');
+      }
+    }
+
+    function renderContacts(contacts) {
+      contactsBody.innerHTML = '';
+      contactsCount.textContent = contacts.length;
+      contacts.forEach((contact) => {
+        const row = document.createElement('tr');
+
+        const siteCell = document.createElement('td');
+        const sitio = contact.sitio || '';
+        if (sitio) {
+          const link = document.createElement('a');
+          link.href = sitio;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = sitio;
+          siteCell.appendChild(link);
+        } else {
+          siteCell.textContent = sitio;
+        }
+        row.appendChild(siteCell);
+
+        const tipo = document.createElement('td');
+        tipo.textContent = contact.tipo || '';
+        row.appendChild(tipo);
+
+        const desc = document.createElement('td');
+        desc.textContent = contact.descripcion || '';
+        row.appendChild(desc);
+
+        const descIa = document.createElement('td');
+        descIa.textContent = contact.descripcion_enriquecida || '';
+        row.appendChild(descIa);
+
+        const valor = document.createElement('td');
+        valor.textContent = contact.valor || '';
+        if (Array.isArray(contact.flags) && contact.flags.length) {
+          valor.title = contact.flags.join(', ');
+        }
+        row.appendChild(valor);
+
+        const urlCell = document.createElement('td');
+        if (contact.url) {
+          const link = document.createElement('a');
+          link.href = contact.url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.className = 'contact-url';
+          link.textContent = contact.url;
+          urlCell.appendChild(link);
+        } else {
+          urlCell.textContent = '';
+        }
+        row.appendChild(urlCell);
+
+        const validCell = document.createElement('td');
+        validCell.className = 'text-center';
+        const validado = contact.validado;
+        if (validado === true) {
+          validCell.textContent = 'Sí';
+          validCell.classList.add('text-success');
+        } else if (validado === false) {
+          validCell.textContent = 'No';
+          validCell.classList.add('text-danger');
+        } else {
+          validCell.textContent = '';
+        }
+        if (Array.isArray(contact.flags) && contact.flags.length) {
+          validCell.title = contact.flags.join(', ');
+        }
+        row.appendChild(validCell);
+
+        contactsBody.appendChild(row);
+      });
+    }
+
+    function renderSiteResults(sites) {
+      sitesBody.innerHTML = '';
+      sitesCount.textContent = sites.length;
+      if (!sites.length) {
+        return;
+      }
+
+      sites.forEach((site) => {
+        const row = document.createElement('tr');
+
+        const urlCell = document.createElement('td');
+        const link = document.createElement('a');
+        link.href = site.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = site.url;
+        urlCell.appendChild(link);
+
+        const statusCell = document.createElement('td');
+        statusCell.className = 'text-center';
+        const statusSpan = document.createElement('span');
+        const status = site.status || 'PENDING';
+        statusSpan.className = `badge ${statusStyles[status] || 'bg-secondary'}`;
+        statusSpan.textContent = statusLabels[status] || status;
+        statusCell.appendChild(statusSpan);
+
+        const countCell = document.createElement('td');
+        countCell.className = 'text-center';
+        countCell.textContent = site.contacts ?? 0;
+
+        row.appendChild(urlCell);
+        row.appendChild(statusCell);
+        row.appendChild(countCell);
+        sitesBody.appendChild(row);
+      });
+    }
+
+    function renderErrors(errors, errorMessage) {
+      statusErrors.innerHTML = '';
+      const items = [...(errors || [])];
+      if (errorMessage) {
+        items.push(errorMessage);
+      }
+      items.slice(0, 5).forEach((item) => {
+        const li = document.createElement('li');
+        li.textContent = item;
+        statusErrors.appendChild(li);
+      });
+      statusErrors.hidden = !statusErrors.childElementCount;
+    }
+
+    function renderNotices(notices) {
+      statusNotes.innerHTML = '';
+      (notices || []).slice(0, 5).forEach((item) => {
+        const li = document.createElement('li');
+        li.textContent = item;
+        statusNotes.appendChild(li);
+      });
+      statusNotes.hidden = !statusNotes.childElementCount;
+    }
+
+    function disableForm(disable) {
+      submitButton.disabled = disable;
+      urlsInput.disabled = disable;
+    }
+
+    function resetStatusCard() {
+      if (pollingId) {
+        clearInterval(pollingId);
+        pollingId = null;
+      }
+      statusCard.classList.add('d-none');
+      resultMessage.classList.add('d-none');
+      resultsSection.classList.add('d-none');
+      downloadLink.classList.add('d-none');
+      statusErrors.innerHTML = '';
+      statusErrors.hidden = true;
+      statusNotes.innerHTML = '';
+      statusNotes.hidden = true;
+      contactsBody.innerHTML = '';
+      contactsCount.textContent = '0';
+      contactsTable.classList.add('d-none');
+      contactsHeader.classList.add('d-none');
+      statusBadge.className = 'badge bg-secondary';
+      statusBadge.textContent = statusLabels.PENDING;
+      progressBar.style.width = '0%';
+      progressBar.textContent = '0%';
+      progressBar.classList.add('progress-bar-striped', 'progress-bar-animated');
+      progressLabel.textContent = '';
+      visitSummary.hidden = true;
+      currentUrlLabel.hidden = true;
+      currentUrlLabel.textContent = '';
+      jobIdLabel.textContent = '';
+      sitesBody.innerHTML = '';
+      sitesCount.textContent = '0';
+    }
+
+    function showAlert(message, variant) {
+      alertContainer.innerHTML = `
+        <div class="alert alert-${variant} alert-dismissible fade show" role="alert">
+          ${message}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button>
+        </div>
+      `;
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
