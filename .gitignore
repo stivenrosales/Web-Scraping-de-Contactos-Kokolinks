@@ -1,8 +1,13 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Archivos temporales de Python
 __pycache__/
 *.pyc
-.venv/
+
+# Variables de entorno
 .env
-.env.*
+
+# Config de VS Code
 .vscode/
-.DS_Store
-exports/

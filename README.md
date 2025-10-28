@@ -31,7 +31,7 @@ python webapp.py
 
 1. Abre `http://127.0.0.1:5000` en tu navegador.
 2. Ingresa una o varias URLs (separadas por saltos de línea, comas o punto y coma) y pulsa “Iniciar análisis”.
-3. Visualiza el progreso en tiempo real por sitio y, cuando el proceso termine, descarga el Excel con los resultados desde la misma página (se guarda también en `exports/`).
+3. Visualiza el progreso en tiempo real por sitio y, cuando el proceso termine, envía los contactos seleccionados al webhook (todos vienen marcados por defecto; puedes desmarcar los que no quieras enviar). El backend continúa generando el Excel en `exports/` por si necesitas el archivo manualmente.
 
 ### Validación con IA
 

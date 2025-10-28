@@ -11,7 +11,7 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-client = OpenAI()
+_client: OpenAI | None = None
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
 
@@ -58,6 +58,19 @@ def respond(
 ) -> Tuple[str, Dict[str, Any]]:
     """Envía un prompt y devuelve el texto plano junto con metadatos."""
 
+    def _get_client() -> OpenAI:
+        """Obtiene una instancia reutilizable del cliente OpenAI."""
+
+        global _client
+        if _client is None:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY no está configurada; no se puede contactar OpenAI."
+                )
+            _client = OpenAI(api_key=api_key)
+        return _client
+
     def call() -> Tuple[str, Dict[str, Any]]:
         kwargs: Dict[str, Any] = {
             "model": MODEL,
@@ -66,7 +79,7 @@ def respond(
         if max_tokens:
             kwargs["max_output_tokens"] = max_tokens
 
-        response = client.responses.create(**kwargs)
+        response = _get_client().responses.create(**kwargs)
         try:
             dumped = response.model_dump()
         except AttributeError:  # pragma: no cover - versiones antiguas

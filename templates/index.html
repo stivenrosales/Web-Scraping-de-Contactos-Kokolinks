@@ -110,6 +110,9 @@
                 <table class="table table-hover align-middle">
                   <thead class="table-light">
                     <tr>
+                      <th scope="col" class="text-center">
+                        <input type="checkbox" class="form-check-input" id="select-all-contacts" checked>
+                      </th>
                       <th scope="col">Sitio</th>
                       <th scope="col">Tipo</th>
                       <th scope="col">Descripción original</th>
@@ -123,10 +126,11 @@
                 </table>
               </div>
 
-              <div class="d-flex justify-content-end mt-3">
-                <a class="btn btn-success d-none" id="download-link" href="#" download>
-                  Descargar Excel
-                </a>
+              <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-3" id="contacts-actions">
+                <div class="text-muted small" id="selection-count"></div>
+                <button type="button" class="btn btn-success d-none" id="send-button">
+                  Enviar a Sheet
+                </button>
               </div>
             </div>
           </div>
@@ -152,12 +156,15 @@
     const contactsBody = document.getElementById('contacts-body');
     const contactsCount = document.getElementById('contacts-count');
     const contactsHeader = document.getElementById('contacts-header');
-    const downloadLink = document.getElementById('download-link');
+    const sendButton = document.getElementById('send-button');
     const jobIdLabel = document.getElementById('job-id-label');
     const alertContainer = document.getElementById('alert-container');
     const contactsTable = document.getElementById('contacts-table');
     const sitesBody = document.getElementById('sites-body');
     const sitesCount = document.getElementById('sites-count');
+    const selectAllCheckbox = document.getElementById('select-all-contacts');
+    const selectionCount = document.getElementById('selection-count');
+    const contactsActions = document.getElementById('contacts-actions');
 
     const statusLabels = {
       PENDING: 'Pendiente',
@@ -177,8 +184,12 @@
       ERROR: 'bg-danger'
     };
 
+    const WEBHOOK_URL = 'https://n8n.truly.cl/webhook/1743df36-76f8-4dc9-b5c3-05d7fcf6ea5e';
+
     let pollingId = null;
     let activeJobId = null;
+    let currentContacts = [];
+    let selectedContactIds = new Set();
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -313,26 +324,42 @@
         renderContacts(data.contacts || []);
         contactsTable.classList.remove('d-none');
         contactsHeader.classList.remove('d-none');
-        if (data.download_url) {
-          downloadLink.classList.remove('d-none');
-          downloadLink.href = data.download_url;
-        } else {
-          downloadLink.classList.add('d-none');
-        }
+        sendButton.classList.remove('d-none');
+        contactsActions.classList.remove('d-none');
       } else {
         contactsBody.innerHTML = '';
         contactsCount.textContent = '0';
         contactsTable.classList.add('d-none');
         contactsHeader.classList.add('d-none');
-        downloadLink.classList.add('d-none');
+        sendButton.classList.add('d-none');
+        contactsActions.classList.add('d-none');
       }
     }
 
     function renderContacts(contacts) {
       contactsBody.innerHTML = '';
-      contactsCount.textContent = contacts.length;
-      contacts.forEach((contact) => {
+      currentContacts = contacts.map((contact, index) => ({
+        ...contact,
+        __id: String(index)
+      }));
+      selectedContactIds = new Set(currentContacts.map((contact) => contact.__id));
+      contactsCount.textContent = currentContacts.length;
+      selectAllCheckbox.checked = true;
+      updateSelectionSummary();
+
+      currentContacts.forEach((contact) => {
         const row = document.createElement('tr');
+
+        const selectCell = document.createElement('td');
+        selectCell.className = 'text-center';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'form-check-input contact-select';
+        checkbox.checked = true;
+        checkbox.dataset.contactId = contact.__id;
+        checkbox.addEventListener('change', handleContactToggle);
+        selectCell.appendChild(checkbox);
+        row.appendChild(selectCell);
 
         const siteCell = document.createElement('td');
         const sitio = contact.sitio || '';
@@ -400,6 +427,87 @@
 
         contactsBody.appendChild(row);
       });
+    }
+
+    function handleContactToggle(event) {
+      const checkbox = event.target;
+      const contactId = checkbox.dataset.contactId;
+      if (!contactId) {
+        return;
+      }
+      if (checkbox.checked) {
+        selectedContactIds.add(contactId);
+      } else {
+        selectedContactIds.delete(contactId);
+      }
+      updateSelectionSummary();
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = selectedContactIds.size === currentContacts.length;
+      }
+    }
+
+    selectAllCheckbox?.addEventListener('change', (event) => {
+      const checked = event.target.checked;
+      selectedContactIds = new Set();
+      document.querySelectorAll('.contact-select').forEach((checkbox) => {
+        checkbox.checked = checked;
+        const contactId = checkbox.dataset.contactId;
+        if (checked && contactId) {
+          selectedContactIds.add(contactId);
+        }
+      });
+      if (!checked) {
+        selectedContactIds.clear();
+      } else {
+        currentContacts.forEach((contact) => selectedContactIds.add(contact.__id));
+      }
+      updateSelectionSummary();
+    });
+
+    sendButton.addEventListener('click', async () => {
+      const selected = currentContacts.filter((contact) => selectedContactIds.has(contact.__id));
+      if (!selected.length) {
+        showAlert('Selecciona al menos un contacto antes de enviar.', 'warning');
+        return;
+      }
+      await sendSelectedContacts(selected);
+    });
+
+    async function sendSelectedContacts(contacts) {
+      try {
+        sendButton.disabled = true;
+        sendButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Enviando...';
+        const response = await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_id: activeJobId,
+            total_contacts: contacts.length,
+            contacts
+          })
+        });
+        if (!response.ok) {
+          throw new Error(`El webhook respondió con estado ${response.status}.`);
+        }
+        showAlert('Contactos enviados correctamente.', 'success');
+      } catch (error) {
+        showAlert(error.message || 'No se pudo enviar la información seleccionada.', 'danger');
+      } finally {
+        sendButton.disabled = false;
+        sendButton.textContent = 'Enviar a Sheet';
+      }
+    }
+
+    function updateSelectionSummary() {
+      if (!selectionCount) {
+        return;
+      }
+      const total = currentContacts.length;
+      const selected = selectedContactIds.size;
+      selectionCount.textContent = total
+        ? `Seleccionados: ${selected} de ${total}`
+        : 'No hay contactos disponibles.';
+      sendButton.disabled = selected === 0;
     }
 
     function renderSiteResults(sites) {
@@ -476,7 +584,8 @@
       statusCard.classList.add('d-none');
       resultMessage.classList.add('d-none');
       resultsSection.classList.add('d-none');
-      downloadLink.classList.add('d-none');
+      sendButton.classList.add('d-none');
+      contactsActions.classList.add('d-none');
       statusErrors.innerHTML = '';
       statusErrors.hidden = true;
       statusNotes.innerHTML = '';
@@ -497,6 +606,12 @@
       jobIdLabel.textContent = '';
       sitesBody.innerHTML = '';
       sitesCount.textContent = '0';
+      selectionCount.textContent = '';
+      currentContacts = [];
+      selectedContactIds = new Set();
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = true;
+      }
     }
 
     function showAlert(message, variant) {
