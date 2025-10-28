@@ -167,27 +167,21 @@
     const contactsActions = document.getElementById('contacts-actions');
 
     const statusLabels = {
-      PENDING: 'Pendiente',
-      RUNNING: 'Analizando',
       OK: 'Completado',
       NO_ENCONTRADO: 'Sin datos',
       RESTRINGIDO: 'Restringido',
-      ERROR: 'Error'
+      ERROR: 'Error',
+      PROCESANDO: 'Procesando',
     };
 
     const statusStyles = {
-      PENDING: 'bg-secondary',
-      RUNNING: 'bg-info text-dark',
       OK: 'bg-success',
       NO_ENCONTRADO: 'bg-warning text-dark',
       RESTRINGIDO: 'bg-warning text-dark',
-      ERROR: 'bg-danger'
+      ERROR: 'bg-danger',
+      PROCESANDO: 'bg-info text-dark',
     };
 
-    const WEBHOOK_URL = 'https://n8n.truly.cl/webhook/1743df36-76f8-4dc9-b5c3-05d7fcf6ea5e';
-
-    let pollingId = null;
-    let activeJobId = null;
     let currentContacts = [];
     let selectedContactIds = new Set();
 
@@ -200,116 +194,117 @@
       }
 
       disableForm(true);
-      resetStatusCard();
+      resetResults();
+      showLoadingState();
 
       try {
         const response = await fetch('/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ urls: rawUrls })
+          body: JSON.stringify({ urls: rawUrls }),
         });
-        const payload = await response.json();
+        const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(payload.error || 'No se pudo iniciar el análisis.');
+          const message = payload.error || `No se pudo procesar la solicitud (HTTP ${response.status}).`;
+          const detail = payload.details ? ` Detalle: ${payload.details}` : '';
+          throw new Error(`${message}${detail}`);
         }
-        activeJobId = payload.job_id;
-        jobIdLabel.textContent = `ID: ${activeJobId}`;
-        statusCard.classList.remove('d-none');
-        startPolling();
+        renderFinalResult(payload);
       } catch (error) {
-        showAlert(error.message, 'danger');
+        statusBadge.className = `badge ${statusStyles.ERROR}`;
+        statusBadge.textContent = statusLabels.ERROR;
+        progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+        progressBar.style.width = '100%';
+        progressBar.textContent = 'Error';
+        progressLabel.textContent = '';
+        showAlert(error.message || 'Ocurrió un error inesperado durante el análisis.', 'danger');
+      } finally {
         disableForm(false);
       }
     });
 
-    function startPolling() {
-      if (pollingId) {
-        clearInterval(pollingId);
+    selectAllCheckbox?.addEventListener('change', (event) => {
+      const checked = event.target.checked;
+      selectedContactIds = new Set();
+      document.querySelectorAll('.contact-select').forEach((checkbox) => {
+        checkbox.checked = checked;
+        const contactId = checkbox.dataset.contactId;
+        if (checked && contactId) {
+          selectedContactIds.add(contactId);
+        }
+      });
+      if (!checked) {
+        selectedContactIds.clear();
+      } else {
+        currentContacts.forEach((_, index) => selectedContactIds.add(String(index)));
       }
-      pollingId = setInterval(fetchStatus, 900);
-      fetchStatus();
-    }
+      updateSelectionSummary();
+    });
 
-    async function fetchStatus() {
-      if (!activeJobId) {
+    sendButton.addEventListener('click', async () => {
+      const selected = currentContacts.filter((_, index) => selectedContactIds.has(String(index)));
+      if (!selected.length) {
+        showAlert('Selecciona al menos un contacto antes de enviar.', 'warning');
         return;
       }
-      try {
-        const response = await fetch(`/status/${activeJobId}`);
-        if (!response.ok) {
-          throw new Error('No fue posible consultar el estado del análisis.');
-        }
-        const data = await response.json();
-        updateUI(data);
-        if (data.finished) {
-          clearInterval(pollingId);
-          disableForm(false);
-        }
-      } catch (error) {
-        clearInterval(pollingId);
-        showAlert(error.message, 'danger');
-        disableForm(false);
-      }
+      await sendSelectedContacts(selected);
+    });
+
+    function showLoadingState() {
+      statusCard.classList.remove('d-none');
+      statusBadge.className = `badge ${statusStyles.PROCESANDO}`;
+      statusBadge.textContent = statusLabels.PROCESANDO;
+      progressBar.classList.add('progress-bar-striped', 'progress-bar-animated');
+      progressBar.style.width = '100%';
+      progressBar.textContent = 'Procesando...';
+      progressLabel.textContent = 'Analizando sitios y recopilando contactos, esto puede tardar unos minutos.';
+      visitSummary.hidden = true;
+      currentUrlLabel.hidden = true;
+      resultMessage.classList.add('d-none');
+      resultsSection.classList.add('d-none');
     }
 
-    function updateUI(data) {
-      const statusText = statusLabels[data.status] || data.status;
-      const badgeClasses = statusStyles[data.status] || 'bg-secondary';
+    function renderFinalResult(data) {
+      const status = data.status || 'ERROR';
+      const badgeClasses = statusStyles[status] || 'bg-secondary';
+      const statusText = statusLabels[status] || status;
       statusBadge.className = `badge ${badgeClasses}`;
       statusBadge.textContent = statusText;
 
-      const percent = Math.min(100, Math.max(0, data.progress_percent));
-      progressBar.style.width = `${percent}%`;
-      progressBar.textContent = `${percent}%`;
-      progressLabel.textContent = data.label || '';
+      progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+      progressBar.style.width = '100%';
+      progressBar.textContent = status === 'OK' ? 'Completado' : statusText;
+      progressLabel.textContent = data.duration_seconds
+        ? `Tiempo total: ${data.duration_seconds} s`
+        : '';
 
-      if (data.current_url) {
-        const totalUrls = data.total_urls || 0;
-        currentUrlLabel.hidden = false;
-        currentUrlLabel.textContent = `Analizando: ${data.current_url} (${data.current_url_index}/${totalUrls})`;
-      } else {
-        currentUrlLabel.hidden = true;
-        currentUrlLabel.textContent = '';
-      }
-
-      if (data.status === 'RUNNING') {
-        progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
-      } else {
-        progressBar.classList.remove('progress-bar-animated');
-      }
-
-      visitSummary.hidden = !data.visited_pages;
       if (data.visited_pages) {
+        visitSummary.hidden = false;
         const links = data.explored_links || 0;
         visitSummary.textContent = `Páginas visitadas: ${data.visited_pages} · Enlaces evaluados: ${links}`;
+      } else {
+        visitSummary.hidden = true;
       }
+      currentUrlLabel.hidden = true;
+      currentUrlLabel.textContent = '';
 
-      renderErrors(data.errors || [], data.error_message);
+      renderErrors(data.errors || []);
       renderNotices(data.notices || []);
-
-      if (data.finished) {
-        handleFinalState(data);
-      }
-    }
-
-    function handleFinalState(data) {
-      progressBar.classList.remove('progress-bar-striped', 'progress-bar-animated');
-      let message = '';
-      let variant = 'secondary';
-
       renderSiteResults(data.site_results || []);
       resultsSection.classList.remove('d-none');
 
-      if (data.status === 'OK') {
-        message = `Se encontraron ${data.contacts_count} contactos.`;
+      let message = '';
+      let variant = 'secondary';
+      if (status === 'OK') {
+        message = `Se encontraron ${data.contacts_count ?? 0} contactos.`;
         variant = 'success';
-      } else if (data.status === 'NO_ENCONTRADO') {
-        message = 'No se localizaron datos de contacto en el sitio.';
+      } else if (status === 'NO_ENCONTRADO') {
+        message = 'No se localizaron datos de contacto en los sitios analizados.';
         variant = 'warning';
-      } else if (data.status === 'RESTRINGIDO') {
-        message = 'El sitio parece restringir el acceso automatizado.';
+      } else if (status === 'RESTRINGIDO') {
+        message = 'Alguno de los sitios parece restringir el acceso automatizado.';
         variant = 'warning';
-      } else if (data.status === 'ERROR') {
+      } else if (status === 'ERROR') {
         message = 'Ocurrió un error durante el rastreo.';
         variant = 'danger';
       }
@@ -318,36 +313,34 @@
         resultMessage.textContent = message;
         resultMessage.className = `alert alert-${variant}`;
         resultMessage.classList.remove('d-none');
+      } else {
+        resultMessage.classList.add('d-none');
       }
 
-      if (data.contacts_count && (data.contacts || []).length) {
-        renderContacts(data.contacts || []);
-        contactsTable.classList.remove('d-none');
-        contactsHeader.classList.remove('d-none');
-        sendButton.classList.remove('d-none');
-        contactsActions.classList.remove('d-none');
+      const contacts = Array.isArray(data.contacts) ? data.contacts : [];
+      currentContacts = contacts.slice();
+      contactsBody.innerHTML = '';
+      contactsCount.textContent = contacts.length;
+      selectedContactIds = new Set();
+      contactsTable.classList.toggle('d-none', contacts.length === 0);
+      contactsHeader.classList.toggle('d-none', contacts.length === 0);
+      contactsActions.classList.toggle('d-none', contacts.length === 0);
+      sendButton.classList.toggle('d-none', contacts.length === 0);
+
+      if (contacts.length) {
+        renderContacts();
       } else {
-        contactsBody.innerHTML = '';
-        contactsCount.textContent = '0';
-        contactsTable.classList.add('d-none');
-        contactsHeader.classList.add('d-none');
-        sendButton.classList.add('d-none');
-        contactsActions.classList.add('d-none');
+        selectionCount.textContent = 'No hay contactos disponibles.';
       }
     }
 
-    function renderContacts(contacts) {
+    function renderContacts() {
       contactsBody.innerHTML = '';
-      currentContacts = contacts.map((contact, index) => ({
-        ...contact,
-        __id: String(index)
-      }));
-      selectedContactIds = new Set(currentContacts.map((contact) => contact.__id));
-      contactsCount.textContent = currentContacts.length;
-      selectAllCheckbox.checked = true;
-      updateSelectionSummary();
+      selectedContactIds = new Set();
+      currentContacts.forEach((contact, index) => {
+        const id = String(index);
+        selectedContactIds.add(id);
 
-      currentContacts.forEach((contact) => {
         const row = document.createElement('tr');
 
         const selectCell = document.createElement('td');
@@ -356,7 +349,7 @@
         checkbox.type = 'checkbox';
         checkbox.className = 'form-check-input contact-select';
         checkbox.checked = true;
-        checkbox.dataset.contactId = contact.__id;
+        checkbox.dataset.contactId = id;
         checkbox.addEventListener('change', handleContactToggle);
         selectCell.appendChild(checkbox);
         row.appendChild(selectCell);
@@ -375,24 +368,24 @@
         }
         row.appendChild(siteCell);
 
-        const tipo = document.createElement('td');
-        tipo.textContent = contact.tipo || '';
-        row.appendChild(tipo);
+        const tipoCell = document.createElement('td');
+        tipoCell.textContent = contact.tipo || '';
+        row.appendChild(tipoCell);
 
-        const desc = document.createElement('td');
-        desc.textContent = contact.descripcion || '';
-        row.appendChild(desc);
+        const descCell = document.createElement('td');
+        descCell.textContent = contact.descripcion || '';
+        row.appendChild(descCell);
 
-        const descIa = document.createElement('td');
-        descIa.textContent = contact.descripcion_enriquecida || '';
-        row.appendChild(descIa);
+        const descIaCell = document.createElement('td');
+        descIaCell.textContent = contact.descripcion_enriquecida || '';
+        row.appendChild(descIaCell);
 
-        const valor = document.createElement('td');
-        valor.textContent = contact.valor || '';
+        const valorCell = document.createElement('td');
+        valorCell.textContent = contact.valor || '';
         if (Array.isArray(contact.flags) && contact.flags.length) {
-          valor.title = contact.flags.join(', ');
+          valorCell.title = contact.flags.join(', ');
         }
-        row.appendChild(valor);
+        row.appendChild(valorCell);
 
         const urlCell = document.createElement('td');
         if (contact.url) {
@@ -427,6 +420,12 @@
 
         contactsBody.appendChild(row);
       });
+      contactsCount.textContent = currentContacts.length;
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = currentContacts.length > 0;
+        selectAllCheckbox.indeterminate = false;
+      }
+      updateSelectionSummary();
     }
 
     function handleContactToggle(event) {
@@ -442,52 +441,53 @@
       }
       updateSelectionSummary();
       if (selectAllCheckbox) {
-        selectAllCheckbox.checked = selectedContactIds.size === currentContacts.length;
+        if (selectedContactIds.size === 0) {
+          selectAllCheckbox.checked = false;
+          selectAllCheckbox.indeterminate = false;
+        } else if (selectedContactIds.size === currentContacts.length) {
+          selectAllCheckbox.checked = true;
+          selectAllCheckbox.indeterminate = false;
+        } else {
+          selectAllCheckbox.indeterminate = true;
+        }
       }
     }
 
-    selectAllCheckbox?.addEventListener('change', (event) => {
-      const checked = event.target.checked;
-      selectedContactIds = new Set();
-      document.querySelectorAll('.contact-select').forEach((checkbox) => {
-        checkbox.checked = checked;
-        const contactId = checkbox.dataset.contactId;
-        if (checked && contactId) {
-          selectedContactIds.add(contactId);
-        }
-      });
-      if (!checked) {
-        selectedContactIds.clear();
+    function updateSelectionSummary() {
+      const total = currentContacts.length;
+      const selected = selectedContactIds.size;
+      if (total) {
+        selectionCount.textContent = `Seleccionados: ${selected} de ${total}`;
       } else {
-        currentContacts.forEach((contact) => selectedContactIds.add(contact.__id));
+        selectionCount.textContent = 'No hay contactos disponibles.';
       }
-      updateSelectionSummary();
-    });
-
-    sendButton.addEventListener('click', async () => {
-      const selected = currentContacts.filter((contact) => selectedContactIds.has(contact.__id));
-      if (!selected.length) {
-        showAlert('Selecciona al menos un contacto antes de enviar.', 'warning');
-        return;
-      }
-      await sendSelectedContacts(selected);
-    });
+      sendButton.disabled = selected === 0;
+    }
 
     async function sendSelectedContacts(contacts) {
       try {
         sendButton.disabled = true;
         sendButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Enviando...';
-        const response = await fetch(WEBHOOK_URL, {
+        const response = await fetch('/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            job_id: activeJobId,
-            total_contacts: contacts.length,
-            contacts
-          })
+            job_id: null,
+            contacts,
+            metadata: {
+              origin: window.location.origin,
+            },
+          }),
         });
+        const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(`El webhook respondió con estado ${response.status}.`);
+          const errorMessage = payload.error || `El servidor respondió con estado ${response.status}.`;
+          const detail = payload.details ? ` Detalle: ${payload.details}` : '';
+          throw new Error(`${errorMessage}${detail}`);
+        }
+        if (payload.error) {
+          const detail = payload.details ? ` Detalle: ${payload.details}` : '';
+          throw new Error(`${payload.error}${detail}`);
         }
         showAlert('Contactos enviados correctamente.', 'success');
       } catch (error) {
@@ -498,22 +498,10 @@
       }
     }
 
-    function updateSelectionSummary() {
-      if (!selectionCount) {
-        return;
-      }
-      const total = currentContacts.length;
-      const selected = selectedContactIds.size;
-      selectionCount.textContent = total
-        ? `Seleccionados: ${selected} de ${total}`
-        : 'No hay contactos disponibles.';
-      sendButton.disabled = selected === 0;
-    }
-
     function renderSiteResults(sites) {
       sitesBody.innerHTML = '';
       sitesCount.textContent = sites.length;
-      if (!sites.length) {
+      if (!Array.isArray(sites) || !sites.length) {
         return;
       }
 
@@ -531,7 +519,7 @@
         const statusCell = document.createElement('td');
         statusCell.className = 'text-center';
         const statusSpan = document.createElement('span');
-        const status = site.status || 'PENDING';
+        const status = site.status || 'NO_ENCONTRADO';
         statusSpan.className = `badge ${statusStyles[status] || 'bg-secondary'}`;
         statusSpan.textContent = statusLabels[status] || status;
         statusCell.appendChild(statusSpan);
@@ -547,13 +535,9 @@
       });
     }
 
-    function renderErrors(errors, errorMessage) {
+    function renderErrors(errors) {
       statusErrors.innerHTML = '';
-      const items = [...(errors || [])];
-      if (errorMessage) {
-        items.push(errorMessage);
-      }
-      items.slice(0, 5).forEach((item) => {
+      (errors || []).slice(0, 5).forEach((item) => {
         const li = document.createElement('li');
         li.textContent = item;
         statusErrors.appendChild(li);
@@ -576,29 +560,24 @@
       urlsInput.disabled = disable;
     }
 
-    function resetStatusCard() {
-      if (pollingId) {
-        clearInterval(pollingId);
-        pollingId = null;
-      }
+    function resetResults() {
       statusCard.classList.add('d-none');
       resultMessage.classList.add('d-none');
       resultsSection.classList.add('d-none');
-      sendButton.classList.add('d-none');
+      contactsTable.classList.add('d-none');
+      contactsHeader.classList.add('d-none');
       contactsActions.classList.add('d-none');
+      sendButton.classList.add('d-none');
       statusErrors.innerHTML = '';
       statusErrors.hidden = true;
       statusNotes.innerHTML = '';
       statusNotes.hidden = true;
       contactsBody.innerHTML = '';
       contactsCount.textContent = '0';
-      contactsTable.classList.add('d-none');
-      contactsHeader.classList.add('d-none');
       statusBadge.className = 'badge bg-secondary';
-      statusBadge.textContent = statusLabels.PENDING;
+      statusBadge.textContent = 'Pendiente';
       progressBar.style.width = '0%';
       progressBar.textContent = '0%';
-      progressBar.classList.add('progress-bar-striped', 'progress-bar-animated');
       progressLabel.textContent = '';
       visitSummary.hidden = true;
       currentUrlLabel.hidden = true;
@@ -611,6 +590,7 @@
       selectedContactIds = new Set();
       if (selectAllCheckbox) {
         selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
       }
     }
 

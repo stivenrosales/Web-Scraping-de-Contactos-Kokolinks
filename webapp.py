@@ -1,4 +1,4 @@
-"""Aplicación web para rastrear sitios y extraer contactos con progreso en vivo."""
+"""Aplicación web para rastrear sitios y extraer contactos."""
 
 from __future__ import annotations
 
@@ -6,119 +6,28 @@ import logging
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Lock
-from typing import Dict, List, Optional
-from uuid import uuid4
+from typing import Dict, List
 
-from flask import (
-    Flask,
-    abort,
-    jsonify,
-    render_template,
-    request,
-    send_file,
-)
+import requests
+from flask import Flask, jsonify, render_template, request
 
-from scraper import ContactScraper, CrawlSettings, export_contacts_to_excel
+from scraper import CrawlSettings, ContactScraper
 from enrichment import enrich_contacts, sort_contacts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("webapp")
 
-_export_dir_env = os.getenv("EXPORT_DIR")
-if _export_dir_env:
-    EXPORT_DIR = Path(_export_dir_env)
-elif os.getenv("VERCEL"):
-    EXPORT_DIR = Path("/tmp")
-else:
-    EXPORT_DIR = Path("exports")
-
+CONTACTS_WEBHOOK_URL = os.getenv(
+    "CONTACTS_WEBHOOK_URL",
+    "https://n8n.truly.cl/webhook/1743df36-76f8-4dc9-b5c3-05d7fcf6ea5e",
+)
 try:
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-except OSError as exc:  # pragma: no cover - entorno sin permisos
-    logging.getLogger("webapp").warning("No se pudo crear el directorio de exportación: %s", exc)
-
-
-@dataclass
-class JobData:
-    job_id: str
-    url: str
-    total_steps: int
-    status: str = "PENDING"
-    progress: float = 0.0
-    current_step: int = 0
-    label: str = ""
-    visited_pages: int = 0
-    explored_links: int = 0
-    contacts: List[Dict[str, str]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    error_message: Optional[str] = None
-    file_path: Optional[str] = None
-    started_at: float = field(default_factory=time.time)
-    completed_at: Optional[float] = None
-    finished: bool = False
-    urls: List[str] = field(default_factory=list)
-    current_url: Optional[str] = None
-    current_url_index: int = 0
-    site_results: List[Dict[str, object]] = field(default_factory=list)
-    notices: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, object]:
-        progress_percent = max(0, min(100, int(round(self.progress * 100))))
-        return {
-            "job_id": self.job_id,
-            "url": self.url,
-            "urls": self.urls,
-            "status": self.status,
-            "finished": self.finished,
-            "progress": self.progress,
-            "progress_percent": progress_percent,
-            "label": self.label,
-            "visited_pages": self.visited_pages,
-            "explored_links": self.explored_links,
-            "errors": self.errors,
-            "error_message": self.error_message,
-            "contacts": self.contacts if self.finished and self.status != "ERROR" else [],
-            "contacts_count": len(self.contacts),
-            "current_url": self.current_url,
-            "current_url_index": self.current_url_index,
-            "total_urls": len(self.urls),
-            "site_results": self.site_results,
-            "notices": self.notices,
-            "download_url": f"/download/{self.job_id}" if self.file_path else None,
-        }
-
+    CONTACTS_WEBHOOK_TIMEOUT = float(os.getenv("CONTACTS_WEBHOOK_TIMEOUT", "15"))
+except ValueError:  # pragma: no cover - valores no numéricos en entorno
+    CONTACTS_WEBHOOK_TIMEOUT = 15.0
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
-
-executor = ThreadPoolExecutor(max_workers=4)
-jobs_lock = Lock()
-jobs: Dict[str, JobData] = {}
-
-
-def store_job(job: JobData) -> None:
-    with jobs_lock:
-        jobs[job.job_id] = job
-
-
-def get_job(job_id: str) -> Optional[JobData]:
-    with jobs_lock:
-        return jobs.get(job_id)
-
-
-def update_job(job_id: str, **kwargs) -> None:
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job:
-            return
-        for key, value in kwargs.items():
-            if hasattr(job, key):
-                setattr(job, key, value)
-
 
 @app.get("/")
 def index() -> str:
@@ -138,210 +47,182 @@ def start_job() -> tuple:
         return jsonify({"error": "No se encontraron URLs válidas."}), 400
 
     settings = CrawlSettings(base_url=urls[0])
-    job_id = uuid4().hex
-    total_steps = max(1, len(urls) * settings.max_pages)
-    job = JobData(
-        job_id=job_id,
-        url=urls[0],
-        urls=urls,
-        total_steps=total_steps,
+    start_time = time.time()
+    try:
+        result = process_urls(urls, settings)
+    except Exception as exc:  # pragma: no cover - logging de fallos inesperados
+        logger.exception("Fallo al procesar las URLs %s: %s", urls, exc)
+        return (
+            jsonify(
+                {
+                    "error": "Ocurrió un error inesperado durante el rastreo.",
+                    "details": str(exc),
+                }
+            ),
+            500,
+        )
+
+    duration = time.time() - start_time
+    result["duration_seconds"] = round(duration, 2)
+    result["urls"] = urls
+    logger.info(
+        "Trabajo completado para %d urls en %.2fs (estado %s, %d contactos)",
+        len(urls),
+        duration,
+        result.get("status"),
+        result.get("contacts_count", 0),
     )
-    store_job(job)
-    executor.submit(run_scraper_job, job_id, urls, settings)
-    logger.info("Trabajo %s iniciado para %d urls", job_id, len(urls))
-    return jsonify({"job_id": job_id})
+    return jsonify(result)
 
 
-@app.get("/status/<job_id>")
-def job_status(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        return jsonify({"error": "Trabajo no encontrado"}), 404
-    return jsonify(job.to_dict())
+@app.post("/send")
+def send_contacts():
+    data = request.get_json(silent=True) or {}
+    contacts = data.get("contacts")
+    if not isinstance(contacts, list) or not contacts:
+        return jsonify({"error": "Selecciona al menos un contacto para enviar."}), 400
+
+    if not CONTACTS_WEBHOOK_URL:
+        return (
+            jsonify(
+                {
+                    "error": "El webhook de contactos no está configurado en el servidor.",
+                }
+            ),
+            500,
+        )
+
+    payload: Dict[str, object] = {
+        "job_id": data.get("job_id"),
+        "total_contacts": len(contacts),
+        "contacts": contacts,
+    }
+    metadata = data.get("metadata")
+    if metadata:
+        payload["metadata"] = metadata
+
+    try:
+        response = requests.post(
+            CONTACTS_WEBHOOK_URL,
+            json=payload,
+            timeout=CONTACTS_WEBHOOK_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:  # pragma: no cover - depende de red externa
+        logger.exception("No se pudo entregar contactos al webhook: %s", exc)
+        status_code = getattr(getattr(exc, "response", None), "status_code", 502)
+        detail = ""
+        if getattr(exc, "response", None) is not None:
+            try:
+                body = exc.response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("error"):
+                detail = str(body.get("error"))
+            elif isinstance(body, dict) and body.get("message"):
+                detail = str(body.get("message"))
+            else:
+                detail = exc.response.text or ""
+        if not detail:
+            detail = str(exc)
+        return (
+            jsonify(
+                {
+                    "error": "No se pudo enviar los contactos al webhook.",
+                    "details": detail,
+                    "status": status_code,
+                }
+            ),
+            502,
+        )
+
+    return jsonify({"ok": True})
 
 
-@app.get("/download/<job_id>")
-def download(job_id: str):
-    job = get_job(job_id)
-    if not job or not job.file_path:
-        abort(404)
-    file_path = Path(job.file_path)
-    if not file_path.exists():
-        abort(404)
-    return send_file(file_path, as_attachment=True, download_name=file_path.name)
-
-
-def run_scraper_job(job_id: str, urls: List[str], base_settings: CrawlSettings) -> None:
-    job = get_job(job_id)
-    if not job:
-        return
-
+def process_urls(urls: List[str], base_settings: CrawlSettings) -> Dict[str, object]:
     total_urls = len(urls)
-    max_pages = base_settings.max_pages
-    total_steps = max(1, total_urls * max_pages)
-    update_job(job_id, total_steps=total_steps)
-
     all_contacts: Dict[tuple, Dict[str, str]] = {}
     aggregated_errors: List[str] = []
     site_results: List[Dict[str, object]] = []
     enrichment_notes: List[str] = []
     total_visited = 0
     total_links = 0
-    completed_steps = 0
     restricted_sites = 0
-    completed_sites = 0
     found_contacts = False
 
-    try:
-        for index, url in enumerate(urls):
-            current_settings = CrawlSettings(
-                base_url=url,
-                max_pages=base_settings.max_pages,
-                max_depth=base_settings.max_depth,
-                request_timeout=base_settings.request_timeout,
-                delay_seconds=base_settings.delay_seconds,
-                user_agent=base_settings.user_agent,
-            )
-            scraper = ContactScraper(current_settings)
-            base_completed_steps = index * max_pages
-            base_visited_pages = total_visited
-            pages_for_url = 0
-            start_progress = base_completed_steps / total_steps if total_steps else 0.0
-            update_job(
-                job_id,
-                status="RUNNING",
-                current_step=base_completed_steps,
-                progress=start_progress,
-                label=f"Iniciando sitio {index + 1}/{total_urls}",
-                visited_pages=total_visited,
-                explored_links=total_links,
-                current_url=url,
-                current_url_index=index + 1,
-            )
+    for url in urls:
+        current_settings = CrawlSettings(
+            base_url=url,
+            max_pages=base_settings.max_pages,
+            max_depth=base_settings.max_depth,
+            request_timeout=base_settings.request_timeout,
+            delay_seconds=base_settings.delay_seconds,
+            user_agent=base_settings.user_agent,
+        )
+        scraper = ContactScraper(current_settings)
+        result = scraper.run()
+        total_visited += result.visited_pages
+        total_links += result.explored_links
 
-            def progress_callback(label: str) -> None:
-                nonlocal pages_for_url, completed_steps
-                pages_for_url = min(pages_for_url + 1, max_pages)
-                completed_steps = base_completed_steps + pages_for_url
-                progress_value = completed_steps / total_steps
-                update_job(
-                    job_id,
-                    status="RUNNING",
-                    current_step=completed_steps,
-                    progress=progress_value,
-                    label=f"[{index + 1}/{total_urls}] {label}",
-                    visited_pages=base_visited_pages + pages_for_url,
-                    explored_links=total_links,
-                    current_url=url,
-                    current_url_index=index + 1,
+        if result.status == "RESTRINGIDO":
+            restricted_sites += 1
+
+        if result.errors:
+            aggregated_errors.extend(f"[{url}] {err}" for err in result.errors)
+
+        if result.contacts:
+            found_contacts = True
+            for contact in result.contacts:
+                key = (
+                    (contact.get("tipo") or "").lower(),
+                    (contact.get("valor") or "").lower(),
+                    (contact.get("url") or "").lower(),
                 )
+                if key not in all_contacts:
+                    enriched = dict(contact)
+                    enriched.setdefault("sitio", url)
+                    all_contacts[key] = enriched
 
-            result = scraper.run(progress=progress_callback)
-            total_visited += result.visited_pages
-            total_links += result.explored_links
-            completed_sites += 1
+        site_results.append(
+            {
+                "url": url,
+                "status": result.status,
+                "contacts": len(result.contacts),
+                "errors": result.errors,
+            }
+        )
 
-            if result.status == "RESTRINGIDO":
-                restricted_sites += 1
+    if found_contacts:
+        overall_status = "OK"
+    elif restricted_sites == total_urls and total_urls > 0:
+        overall_status = "RESTRINGIDO"
+    elif restricted_sites > 0:
+        overall_status = "RESTRINGIDO"
+    else:
+        overall_status = "NO_ENCONTRADO"
 
-            if result.errors:
-                aggregated_errors.extend(f"[{url}] {err}" for err in result.errors)
+    contacts_list = list(all_contacts.values())
 
-            if result.contacts:
-                found_contacts = True
-                for contact in result.contacts:
-                    key = (
-                        contact.get("tipo", "").lower(),
-                        contact.get("valor", "").lower(),
-                        contact.get("url", "").lower(),
-                    )
-                    if key not in all_contacts:
-                        enriched = dict(contact)
-                        enriched.setdefault("sitio", url)
-                        all_contacts[key] = enriched
-
-            site_results.append(
-                {
-                    "url": url,
-                    "status": result.status,
-                    "contacts": len(result.contacts),
-                    "errors": result.errors,
-                }
+    if contacts_list:
+        try:
+            contacts_list, enrichment_notes = enrich_contacts(contacts_list)
+            contacts_list = sort_contacts(contacts_list)
+        except Exception as exc:  # pragma: no cover - seguridad adicional
+            logger.exception("Error inesperado al enriquecer contactos: %s", exc)
+            enrichment_notes.append(
+                "Ocurrió un error inesperado durante el enriquecimiento IA. "
+                "Se muestran los datos originales."
             )
-            completed_steps = min((index + 1) * max_pages, total_steps)
-            progress_after_site = completed_steps / total_steps if total_steps else 1.0
-            next_url = urls[index + 1] if index + 1 < total_urls else None
-            update_job(
-                job_id,
-                current_step=completed_steps,
-                progress=progress_after_site,
-                visited_pages=total_visited,
-                explored_links=total_links,
-                label=f"Sitio {index + 1}/{total_urls} completado",
-                current_url=next_url,
-                current_url_index=index + 1,
-            )
-
-        if found_contacts:
-            overall_status = "OK"
-        elif restricted_sites == total_urls:
-            overall_status = "RESTRINGIDO"
-        elif restricted_sites > 0:
-            overall_status = "RESTRINGIDO"
-        else:
-            overall_status = "NO_ENCONTRADO"
-
-        file_path: Optional[str] = None
-        contacts_list = list(all_contacts.values())
-        if contacts_list:
-            try:
-                contacts_list, enrichment_notes = enrich_contacts(contacts_list)
-                contacts_list = sort_contacts(contacts_list)
-            except Exception as exc:  # pragma: no cover - seguridad adicional
-                logger.exception("Error inesperado al enriquecer contactos: %s", exc)
-                enrichment_notes.append(
-                    "Ocurrió un error inesperado durante el enriquecimiento IA. "
-                    "Se muestran los datos originales."
-                )
-            export_filename = f"contactos_{job_id}.xlsx"
-            file_path = export_contacts_to_excel(contacts_list, export_filename)
-
-        update_job(
-            job_id,
-            status=overall_status,
-            progress=1.0,
-            current_step=total_steps,
-            visited_pages=total_visited,
-            explored_links=total_links,
-            contacts=contacts_list,
-            errors=aggregated_errors,
-            file_path=file_path,
-            completed_at=time.time(),
-            finished=True,
-            label="Rastreo finalizado",
-            site_results=site_results,
-            current_url=None,
-            current_url_index=completed_sites,
-            notices=enrichment_notes,
-        )
-        logger.info(
-            "Trabajo %s finalizado con estado %s (%d contactos)",
-            job_id,
-            overall_status,
-            len(contacts_list),
-        )
-    except Exception as exc:  # pragma: no cover - logging de fallos inesperados
-        logger.exception("Fallo en trabajo %s: %s", job_id, exc)
-        update_job(
-            job_id,
-            status="ERROR",
-            error_message=str(exc),
-            progress=1.0,
-            current_step=total_steps,
-            completed_at=time.time(),
-            finished=True,
-            label="Error durante el rastreo",
-        )
+    return {
+        "status": overall_status,
+        "contacts": contacts_list,
+        "contacts_count": len(contacts_list),
+        "visited_pages": total_visited,
+        "explored_links": total_links,
+        "errors": aggregated_errors,
+        "site_results": site_results,
+        "notices": enrichment_notes,
+    }
 
 
 if __name__ == "__main__":

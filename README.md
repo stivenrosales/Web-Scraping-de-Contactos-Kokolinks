@@ -31,7 +31,19 @@ python webapp.py
 
 1. Abre `http://127.0.0.1:5000` en tu navegador.
 2. Ingresa una o varias URLs (separadas por saltos de línea, comas o punto y coma) y pulsa “Iniciar análisis”.
-3. Visualiza el progreso en tiempo real por sitio y, cuando el proceso termine, envía los contactos seleccionados al webhook (todos vienen marcados por defecto; puedes desmarcar los que no quieras enviar). El backend continúa generando el Excel en `exports/` por si necesitas el archivo manualmente.
+3. Espera a que finalice el análisis (verás un indicador de proceso). Al completarse, elige qué contactos enviar; todos vienen marcados por defecto y el backend reenviará la selección al webhook configurado.
+
+### Webhook de destino
+
+Define la URL del webhook y el tiempo de espera (opcional) mediante variables de entorno antes de arrancar `webapp.py` (útil para despliegues en Vercel u otros servicios):
+
+```bash
+export CONTACTS_WEBHOOK_URL="https://n8n.truly.cl/webhook/1743df36-76f8-4dc9-b5c3-05d7fcf6ea5e"
+# opcional: segundos que esperará la petición al webhook
+export CONTACTS_WEBHOOK_TIMEOUT=15
+```
+
+Si la variable `CONTACTS_WEBHOOK_URL` no está configurada, se usará la URL anterior como predeterminada.
 
 ### Validación con IA
 
