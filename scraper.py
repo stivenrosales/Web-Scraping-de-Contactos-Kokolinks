@@ -42,10 +42,11 @@ RESTRICTED_STATUS = {401, 403, 429, 503}
 @dataclass
 class CrawlSettings:
     base_url: str
-    max_pages: int = 30
+    max_pages: int = 20
     max_depth: int = 2
+    max_links_per_page: int = 25
     request_timeout: int = 10
-    delay_seconds: float = 0.5
+    delay_seconds: float = 0.35
     user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_3) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -261,11 +262,67 @@ class ContactScraper:
     def _valid_phone_digits(self, digits: str) -> bool:
         return 7 <= len(digits) <= 15
 
-    def _collect_links(self, html: str, current_url: str, base_url: str) -> Set[str]:
+    def _collect_links(self, html: str, current_url: str, base_url: str) -> List[str]:
         soup = BeautifulSoup(html, "html.parser")
-        links: Set[str] = set()
+        links: List[str] = []
         base_domain = urlparse(base_url).netloc
         base_clean = base_domain.split(":", 1)[0].lstrip("www.")
+        seen: Set[str] = set()
+        candidates: List[Tuple[int, str]] = []
+        skip_ext = {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".webp",
+            ".svg",
+            ".ico",
+            ".css",
+            ".js",
+            ".json",
+            ".xml",
+            ".mp4",
+            ".mov",
+            ".avi",
+            ".zip",
+            ".rar",
+            ".gz",
+            ".tar",
+            ".woff",
+            ".woff2",
+            ".ttf",
+        }
+        priority_keywords = (
+            "contact",
+            "contacto",
+            "about",
+            "nosotros",
+            "soporte",
+            "support",
+            "equipo",
+            "team",
+            "help",
+            "ayuda",
+            "ventas",
+            "sales",
+            "service",
+            "servicio",
+            "press",
+            "prensa",
+        )
+        penalty_keywords = (
+            "blog",
+            "news",
+            "posts",
+            "articulo",
+            "article",
+            "categoria",
+            "category",
+            "tag",
+            "legal",
+            "term",
+            "privacy",
+        )
 
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"].strip()
@@ -275,11 +332,33 @@ class ContactScraper:
             parsed = urlparse(absolute)
             if parsed.scheme not in ("http", "https"):
                 continue
+            path_lower = parsed.path.lower()
+            if any(path_lower.endswith(ext) for ext in skip_ext):
+                continue
             target_domain = parsed.netloc.split(":", 1)[0].lstrip("www.")
             if target_domain and not target_domain.endswith(base_clean):
                 continue
             normalized = self._normalize_url(absolute)
-            links.add(normalized)
+            if normalized in seen:
+                continue
+            score = 0
+            if parsed.query:
+                score -= 1
+            if len(parsed.path.split("/")) > 5:
+                score -= 1
+            for keyword in priority_keywords:
+                if keyword in path_lower:
+                    score += 6
+            for keyword in penalty_keywords:
+                if keyword in path_lower:
+                    score -= 2
+            score += max(0, 12 - len(path_lower))  # prioriza rutas cortas
+            candidates.append((score, normalized))
+            seen.add(normalized)
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        for _, link in candidates[: self.settings.max_links_per_page]:
+            links.append(link)
         return links
 
 def export_contacts_to_excel(contacts: Iterable[Contact], filename: str) -> str:

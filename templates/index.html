@@ -103,16 +103,16 @@
 
               <div class="d-flex justify-content-between align-items-center mb-3" id="contacts-header">
                 <h3 class="h6 mb-0">Contactos encontrados</h3>
-                <span class="badge bg-primary-subtle text-primary" id="contacts-count">0</span>
+                <div class="d-flex gap-2 align-items-center">
+                  <span class="badge bg-primary-subtle text-primary" id="contacts-count">0</span>
+                  <span class="badge bg-success-subtle text-success" id="validated-count">0 validados IA</span>
+                </div>
               </div>
 
               <div id="contacts-table" class="table-responsive">
                 <table class="table table-hover align-middle">
                   <thead class="table-light">
                     <tr>
-                      <th scope="col" class="text-center">
-                        <input type="checkbox" class="form-check-input" id="select-all-contacts" checked>
-                      </th>
                       <th scope="col">Sitio</th>
                       <th scope="col">Tipo</th>
                       <th scope="col">Descripción original</th>
@@ -127,10 +127,7 @@
               </div>
 
               <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-3" id="contacts-actions">
-                <div class="text-muted small" id="selection-count"></div>
-                <button type="button" class="btn btn-success d-none" id="send-button">
-                  Enviar a Sheet
-                </button>
+                <div class="text-muted small" id="delivery-status"></div>
               </div>
             </div>
           </div>
@@ -156,15 +153,14 @@
     const contactsBody = document.getElementById('contacts-body');
     const contactsCount = document.getElementById('contacts-count');
     const contactsHeader = document.getElementById('contacts-header');
-    const sendButton = document.getElementById('send-button');
     const jobIdLabel = document.getElementById('job-id-label');
     const alertContainer = document.getElementById('alert-container');
     const contactsTable = document.getElementById('contacts-table');
     const sitesBody = document.getElementById('sites-body');
     const sitesCount = document.getElementById('sites-count');
-    const selectAllCheckbox = document.getElementById('select-all-contacts');
-    const selectionCount = document.getElementById('selection-count');
     const contactsActions = document.getElementById('contacts-actions');
+    const validatedCountBadge = document.getElementById('validated-count');
+    const deliveryStatus = document.getElementById('delivery-status');
 
     const statusLabels = {
       OK: 'Completado',
@@ -183,7 +179,6 @@
     };
 
     let currentContacts = [];
-    let selectedContactIds = new Set();
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -221,33 +216,6 @@
       } finally {
         disableForm(false);
       }
-    });
-
-    selectAllCheckbox?.addEventListener('change', (event) => {
-      const checked = event.target.checked;
-      selectedContactIds = new Set();
-      document.querySelectorAll('.contact-select').forEach((checkbox) => {
-        checkbox.checked = checked;
-        const contactId = checkbox.dataset.contactId;
-        if (checked && contactId) {
-          selectedContactIds.add(contactId);
-        }
-      });
-      if (!checked) {
-        selectedContactIds.clear();
-      } else {
-        currentContacts.forEach((_, index) => selectedContactIds.add(String(index)));
-      }
-      updateSelectionSummary();
-    });
-
-    sendButton.addEventListener('click', async () => {
-      const selected = currentContacts.filter((_, index) => selectedContactIds.has(String(index)));
-      if (!selected.length) {
-        showAlert('Selecciona al menos un contacto antes de enviar.', 'warning');
-        return;
-      }
-      await sendSelectedContacts(selected);
     });
 
     function showLoadingState() {
@@ -321,38 +289,28 @@
       currentContacts = contacts.slice();
       contactsBody.innerHTML = '';
       contactsCount.textContent = contacts.length;
-      selectedContactIds = new Set();
+
+      const validatedContacts = contacts.filter((contact) => contact.validado === true);
+      validatedCountBadge.textContent = `${validatedContacts.length} validados IA`;
+      deliveryStatus.textContent = '';
+      deliveryStatus.className = 'text-muted small';
+
       contactsTable.classList.toggle('d-none', contacts.length === 0);
       contactsHeader.classList.toggle('d-none', contacts.length === 0);
       contactsActions.classList.toggle('d-none', contacts.length === 0);
-      sendButton.classList.toggle('d-none', contacts.length === 0);
 
       if (contacts.length) {
         renderContacts();
+        handleAutoDelivery(validatedContacts, data.delivery);
       } else {
-        selectionCount.textContent = 'No hay contactos disponibles.';
+        deliveryStatus.textContent = 'No hay contactos disponibles.';
       }
     }
 
     function renderContacts() {
       contactsBody.innerHTML = '';
-      selectedContactIds = new Set();
-      currentContacts.forEach((contact, index) => {
-        const id = String(index);
-        selectedContactIds.add(id);
-
+      currentContacts.forEach((contact) => {
         const row = document.createElement('tr');
-
-        const selectCell = document.createElement('td');
-        selectCell.className = 'text-center';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'form-check-input contact-select';
-        checkbox.checked = true;
-        checkbox.dataset.contactId = id;
-        checkbox.addEventListener('change', handleContactToggle);
-        selectCell.appendChild(checkbox);
-        row.appendChild(selectCell);
 
         const siteCell = document.createElement('td');
         const sitio = contact.sitio || '';
@@ -421,80 +379,50 @@
         contactsBody.appendChild(row);
       });
       contactsCount.textContent = currentContacts.length;
-      if (selectAllCheckbox) {
-        selectAllCheckbox.checked = currentContacts.length > 0;
-        selectAllCheckbox.indeterminate = false;
-      }
-      updateSelectionSummary();
     }
 
-    function handleContactToggle(event) {
-      const checkbox = event.target;
-      const contactId = checkbox.dataset.contactId;
-      if (!contactId) {
+    async function handleAutoDelivery(validatedContacts, deliveryInfo) {
+      if (!validatedContacts.length) {
+        deliveryStatus.textContent = 'No hay contactos validados por la IA para enviar.';
+        deliveryStatus.className = 'text-muted small';
         return;
       }
-      if (checkbox.checked) {
-        selectedContactIds.add(contactId);
-      } else {
-        selectedContactIds.delete(contactId);
+      if (deliveryInfo && deliveryInfo.sent) {
+        deliveryStatus.textContent = 'Contactos validados enviados automáticamente al webhook.';
+        deliveryStatus.className = 'text-success small';
+        return;
       }
-      updateSelectionSummary();
-      if (selectAllCheckbox) {
-        if (selectedContactIds.size === 0) {
-          selectAllCheckbox.checked = false;
-          selectAllCheckbox.indeterminate = false;
-        } else if (selectedContactIds.size === currentContacts.length) {
-          selectAllCheckbox.checked = true;
-          selectAllCheckbox.indeterminate = false;
-        } else {
-          selectAllCheckbox.indeterminate = true;
-        }
+      if (deliveryInfo && deliveryInfo.error) {
+        deliveryStatus.textContent = `El envío automático falló en el servidor: ${deliveryInfo.error}`;
+        deliveryStatus.className = 'text-warning small';
+        return;
       }
-    }
 
-    function updateSelectionSummary() {
-      const total = currentContacts.length;
-      const selected = selectedContactIds.size;
-      if (total) {
-        selectionCount.textContent = `Seleccionados: ${selected} de ${total}`;
-      } else {
-        selectionCount.textContent = 'No hay contactos disponibles.';
-      }
-      sendButton.disabled = selected === 0;
-    }
-
-    async function sendSelectedContacts(contacts) {
+      deliveryStatus.textContent = 'Enviando contactos validados al webhook...';
+      deliveryStatus.className = 'text-muted small';
       try {
-        sendButton.disabled = true;
-        sendButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Enviando...';
         const response = await fetch('/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             job_id: null,
-            contacts,
+            contacts: validatedContacts,
             metadata: {
               origin: window.location.origin,
             },
           }),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          const errorMessage = payload.error || `El servidor respondió con estado ${response.status}.`;
+        if (!response.ok || payload.error) {
+          const message = payload.error || `No se pudo enviar la información (HTTP ${response.status}).`;
           const detail = payload.details ? ` Detalle: ${payload.details}` : '';
-          throw new Error(`${errorMessage}${detail}`);
+          throw new Error(`${message}${detail}`);
         }
-        if (payload.error) {
-          const detail = payload.details ? ` Detalle: ${payload.details}` : '';
-          throw new Error(`${payload.error}${detail}`);
-        }
-        showAlert('Contactos enviados correctamente.', 'success');
+        deliveryStatus.textContent = 'Contactos validados enviados correctamente al webhook.';
+        deliveryStatus.className = 'text-success small';
       } catch (error) {
-        showAlert(error.message || 'No se pudo enviar la información seleccionada.', 'danger');
-      } finally {
-        sendButton.disabled = false;
-        sendButton.textContent = 'Enviar a Sheet';
+        deliveryStatus.textContent = error.message || 'No se pudo enviar automáticamente al webhook.';
+        deliveryStatus.className = 'text-danger small';
       }
     }
 
@@ -567,7 +495,6 @@
       contactsTable.classList.add('d-none');
       contactsHeader.classList.add('d-none');
       contactsActions.classList.add('d-none');
-      sendButton.classList.add('d-none');
       statusErrors.innerHTML = '';
       statusErrors.hidden = true;
       statusNotes.innerHTML = '';
@@ -585,13 +512,10 @@
       jobIdLabel.textContent = '';
       sitesBody.innerHTML = '';
       sitesCount.textContent = '0';
-      selectionCount.textContent = '';
       currentContacts = [];
-      selectedContactIds = new Set();
-      if (selectAllCheckbox) {
-        selectAllCheckbox.checked = true;
-        selectAllCheckbox.indeterminate = false;
-      }
+      validatedCountBadge.textContent = '0 validados IA';
+      deliveryStatus.textContent = '';
+      deliveryStatus.className = 'text-muted small';
     }
 
     function showAlert(message, variant) {

@@ -184,6 +184,7 @@ def _query_contacts_with_retry(
 def _build_prompt(contacts: Sequence[Dict[str, str]], *, strict: bool) -> str:
     ejemplos = []
     for idx, contact in enumerate(contacts, start=1):
+        dominio = _extract_domain(contact)
         ejemplos.append(
             {
                 "indice": idx,
@@ -191,6 +192,8 @@ def _build_prompt(contacts: Sequence[Dict[str, str]], *, strict: bool) -> str:
                 "valor": contact.get("valor", ""),
                 "descripcion": contact.get("descripcion", ""),
                 "pagina": contact.get("url", ""),
+                "sitio": contact.get("sitio", ""),
+                "dominio_sitio": dominio,
             }
         )
 
@@ -201,7 +204,10 @@ def _build_prompt(contacts: Sequence[Dict[str, str]], *, strict: bool) -> str:
         "descripcion debe ser un título breve (≤25 caracteres) que indique el rol del contacto.",
         "descripcion no puede repetir el dato literal (correo/teléfono). Usa frases como 'Email prensa', 'Teléfono soporte', 'Email redacción'.",
         "Si no es posible inferir el rol, usa 'Contacto general'.",
-        "motivo debe quedar en blanco cuando el dato sea válido; si no lo es, explica en ≤40 caracteres por qué."
+        "motivo debe quedar en blanco cuando el dato sea válido; si no lo es, explica en ≤40 caracteres por qué.",
+        "Los datos provienen del mismo sitio web: usa dominio_sitio para decidir relevancia.",
+        "Marca valido=false si el correo/teléfono parece ser de terceros (seguidores, redes sociales, noticias, menciones), si el dominio no coincide ni se asocia claramente con el sitio, o si es un correo genérico de otra marca.",
+        "Solo marca valido=true si el dato sirve para contactar al sitio/empresa del dominio_sitio (o está claramente etiquetado como contacto/soporte/ventas/prensa de ese sitio), aunque sea un gmail corporativo indicado en la descripción.",
     ]
 
     if strict:
@@ -212,6 +218,17 @@ def _build_prompt(contacts: Sequence[Dict[str, str]], *, strict: bool) -> str:
 
     payload = {"instrucciones": " ".join(instrucciones), "contactos": ejemplos}
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _extract_domain(contact: Dict[str, str]) -> str:
+    from urllib.parse import urlparse
+
+    url = contact.get("sitio") or contact.get("url") or ""
+    parsed = urlparse(url)
+    host = parsed.netloc or ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 
 def _as_iterable(value: Iterable[str] | str | None) -> Iterable[str]:
