@@ -2,6 +2,12 @@
 
 Aplicación CLI que rastrea un sitio web y sus subpáginas para identificar correos electrónicos y números de teléfono con contexto. Al finalizar, exporta los resultados a un archivo Excel (`.xlsx`).
 
+### Novedades rápidas
+
+- Webhook por defecto: `https://n8n.truly.cl/webhook/180d63f6-70b9-4844-ae38-8a3ed9a43a36` (puedes sobrescribir con `CONTACTS_WEBHOOK_URL`).
+- Envío automático solo de contactos validados por IA al webhook (sin selección manual en el frontend).
+- Rastreo optimizado para priorizar páginas de contacto/soporte (20 páginas máx., 25 enlaces por página, 0.35s de pausa).
+
 ### Requisitos
 
 ```bash
